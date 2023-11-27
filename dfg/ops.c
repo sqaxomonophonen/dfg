@@ -157,7 +157,7 @@ BUS add(BUS b0, BUS b1)
 
 struct curvegen_state {
 	int n;
-	struct curve_point* xs;
+	struct curve_segment* xs;
 };
 
 static void curvegen_process(struct op_context* ctx)
@@ -165,7 +165,7 @@ static void curvegen_process(struct op_context* ctx)
 	assert(!"TODO");
 }
 
-BUS curvegen(struct curve_point* xs)
+BUS curvegen(struct curve_segment* xs)
 {
 	struct curvegen_state* cs = calloc(1, sizeof *cs);
 	const int n = arrlen(xs);

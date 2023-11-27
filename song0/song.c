@@ -5,7 +5,7 @@ BUS song(void)
 	set_bpm(120);
 	const int n_beats = 4*4;
 	for (int beat = 0; beat < n_beats; beat++) {
-		printf("beat %d -> %d\n", beat, relpos(0));
+		printf("beat %d -> %.0f\n", beat, relpos(0));
 		adv(1);
 	}
 	//adv(n_beats);
