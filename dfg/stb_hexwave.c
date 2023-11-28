@@ -11,7 +11,7 @@ struct hexwav {
 	HexWaveParameters last_params;
 };
 
-static void process(struct op_context* ctx)
+static void process(struct opcode_context* ctx)
 {
 	struct hexwav* hexwav = ctx->usr;
 
@@ -21,13 +21,10 @@ static void process(struct op_context* ctx)
 	struct cur c_half_height = bufcur1(&ctx->in[3]);
 	struct cur c_zero_wait   = bufcur1(&ctx->in[4]);
 
-	const int n = ctx->out.n;
-	int remaining = n;
+	int remaining = ctx->n_frames;
 
 	assert((sizeof(*ctx->out.data) == sizeof(float)) && "hexwave uses float");
 	assert(ctx->out.width == 1);
-	assert(ctx->out.width_stride == 1);
-	assert(ctx->out.index_stride == 0);
 
 	HexWaveParameters* last_params = &hexwav->last_params;
 	HexWave* hw = &hexwav->hw;

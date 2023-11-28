@@ -1,6 +1,6 @@
 CFLAGS+=-std=gnu11 -Wall
-#CFLAGS+=-O0 -g
-CFLAGS+=-O2
+CFLAGS+=-O0 -g
+#CFLAGS+=-O2
 
 all: libdfg.a
 
