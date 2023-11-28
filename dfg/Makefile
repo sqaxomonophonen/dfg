@@ -1,4 +1,4 @@
-CFLAGS+=-std=c11 -Wall
+CFLAGS+=-std=gnu11 -Wall
 #CFLAGS+=-O0 -g
 CFLAGS+=-O2
 

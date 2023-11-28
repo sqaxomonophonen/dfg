@@ -2,11 +2,13 @@
 #include <stdlib.h>
 #include <assert.h>
 #include <pthread.h>
+#include <time.h>
 
 #include "idfg.h"
 
 struct seq global_seq;
 double global_sample_rate;
+int global_buffer_length;
 
 enum bus_type {
 	BUS_OPCODE = 1,
@@ -32,7 +34,10 @@ struct bus {
 			BUS bus;
 			int offset;
 		} slice;
-		SIGNAL constant;
+		struct {
+			SIGNAL value;
+			int index;
+		} constant;
 	};
 	int tag;
 };
@@ -41,9 +46,10 @@ struct bus* busses;
 
 static BUS new_bus(void)
 {
-	BUS bus = arrlen(busses);
-	arrput(busses, ((struct bus){0}));
-	return bus;
+	BUS i = arrlen(busses);
+	struct bus* b = arraddnptr(busses, 1);
+	memset(b, 0, sizeof *b);
+	return i;
 }
 
 static inline struct bus* get_bus(BUS bi)
@@ -64,7 +70,7 @@ BUS constant(SIGNAL v)
 	struct bus* b = get_bus(i);
 	b->width = 1;
 	b->type = BUS_CONSTANT;
-	b->constant = v;
+	b->constant.value = v;
 	return i;
 }
 
@@ -145,7 +151,7 @@ BUS opcode(int output_width, opcode_fn fn, void* usr, ...)
 	return opcode_arr(output_width, fn, usr, wp - busses, busses);
 }
 
-static void add_process(struct op_context* ctx)
+static void add_process(struct opcode_context* ctx)
 {
 	assert(!"TODO");
 }
@@ -165,7 +171,7 @@ struct curvegen_state {
 	struct curve_segment* xs;
 };
 
-static void curvegen_process(struct op_context* ctx)
+static void curvegen_process(struct opcode_context* ctx)
 {
 	assert(!"TODO");
 }
@@ -217,7 +223,7 @@ static int todo_compar(const void* va, const void* vb)
 
 struct exec {
 	opcode_fn fn;
-	struct op_context context;
+	struct opcode_context context;
 	pthread_mutex_t counter_mutex;
 	int counter;
 	int counter_reset;
@@ -227,10 +233,21 @@ struct exec {
 };
 
 struct gig {
+	int n_frames;
 	struct exec* execs;
-	pthread_mutex_t todos_mutex;
+	pthread_mutex_t sync_mutex;
+	pthread_cond_t sync_cond;
+	int n_execs_active;
 	struct todo* todos;
+	SIGNAL* constants;
 } gig;
+
+static void buf_init(struct buf* buf, int width, int n_frames)
+{
+	memset(buf, 0, sizeof *buf);
+	buf->width = width;
+	buf->data = calloc(width*n_frames, sizeof *buf->data);
+}
 
 void band_bus(BUS bi)
 {
@@ -245,17 +262,17 @@ void band_bus(BUS bi)
 			n_orphans++;
 			continue;
 		}
-		if (bus->type == BUS_SLICE) {
-		} else if (bus->type == BUS_CONSTANT) {
-		} else if (bus->type == BUS_OPCODE) {
+		if (bus->type == BUS_OPCODE) {
 			arrput(opcode_busses, i);
-		} else {
-			assert(!"unhandled type");
+		} else if (bus->type == BUS_CONSTANT) {
+			bus->constant.index = arrlen(gig.constants);
+			arrput(gig.constants, bus->constant.value);
 		}
 	}
 	if (n_orphans > 0) printf("[WARNING] oprhan bus count: %d\n", n_orphans);
 
 	BUS* order = NULL;
+	arrsetlen(gig.todos, 0);
 	for (int i = 0; i < arrlen(opcode_busses); i++) {
 		BUS oi = opcode_busses[i];
 		struct bus* bus = get_bus(oi);
@@ -263,6 +280,7 @@ void band_bus(BUS bi)
 		bus->tag = bus->opcode.n_dependencies;
 		if (bus->opcode.n_dependencies == 0) {
 			arrput(order, oi);
+			arrput(gig.todos, ((struct todo) { .index = oi }));
 		}
 	}
 
@@ -293,7 +311,8 @@ void band_bus(BUS bi)
 		bus->opcode.order = i0;
 	}
 
-	pthread_mutex_init(&gig.todos_mutex, NULL);
+	pthread_mutex_init(&gig.sync_mutex, NULL);
+	pthread_cond_init(&gig.sync_cond, NULL);
 	arrsetlen(gig.execs, n_execs);
 
 	for (int i0 = 0; i0 < n_execs; i0++) {
@@ -301,9 +320,45 @@ void band_bus(BUS bi)
 		struct exec* x = &gig.execs[i0];
 		x->fn = bus->opcode.fn;
 		x->context.usr = bus->opcode.usr;
-		// TODO setup x->context.in
-		// TODO setup x->context.out
-		// TODO setup x->context.n_in
+		buf_init(&x->context.out, bus->width, global_buffer_length);
+		const int n_inputs = bus->opcode.n_inputs;
+		x->context.n_in = n_inputs;
+		x->context.in = calloc(n_inputs, sizeof *x->context.in);
+		for (int i1 = 0; i1 < n_inputs; i1++) {
+			struct bus* bo = get_bus(bus->opcode.inputs[i1]);
+			int offset = 0;
+			struct buf inbuf = {
+				.width = bo->width,
+			};
+			for (;;) {
+				if (bo->type == BUS_CONSTANT) {
+					assert((offset == 0) && "cannot slice constant (width=1)");
+					assert((inbuf.width == 1) && "what's going on");
+					assert((bo->width == 1) && "dude no");
+					inbuf.data = &gig.constants[bo->constant.index];
+
+					break;
+				} else if (bo->type == BUS_OPCODE) {
+					struct exec* xo = &gig.execs[bo->opcode.order];
+					struct buf* bfo = &xo->context.out;
+					assert(bfo->data != NULL);
+					inbuf.data = bfo->data + offset;
+					inbuf.stride = bfo->width - inbuf.width;
+					break;
+				} else if (bo->type == BUS_SLICE) {
+					const int w = bo->width;
+					const int o = bo->slice.offset;
+					offset += o;
+					bo = get_bus(bo->slice.bus);
+					assert(bo->width >= (o+w));
+
+				} else {
+					assert(!"unhandled type");
+				}
+			}
+			x->context.in[i1] = inbuf;
+		}
+
 		pthread_mutex_init(&x->counter_mutex, NULL);
 		x->counter = bus->opcode.n_dependencies;
 		x->counter_reset = x->counter + bus->opcode.n_dependees;
@@ -315,56 +370,116 @@ void band_bus(BUS bi)
 	}
 }
 
-static int exec1(void)
+static void work_it_out(void)
 {
-	struct todo top;
-	pthread_mutex_lock(&gig.todos_mutex);
-	int n = arrlen(gig.todos);
-	if (n == 0) {
-		pthread_mutex_unlock(&gig.todos_mutex);
-		return 0;
-	}
-	top = gig.todos[n-1];
-	arrsetlen(gig.todos, n-1);
-	pthread_mutex_unlock(&gig.todos_mutex);
-
-	struct exec* x = &gig.execs[top.index];
-	assert(x->counter == 0);
-	x->iteration++;
-	x->counter = x->counter_reset;
-
-	x->fn(&x->context);
-
-	int n_new_todos = 0;
-	struct todo new_todos[1<<10];
-	for (int i = 0; i < x->n_yields; i++) {
-		int y = x->yields[i];
-		struct exec* o = &gig.execs[y];
-		pthread_mutex_lock(&o->counter_mutex);
-		assert(o->counter > 0);
-		o->counter--;
-		if (o->counter == 0) {
-			assert(n_new_todos < ARRAY_LENGTH(new_todos));
-			new_todos[n_new_todos++] = (struct todo){
-				.iteration = o->iteration,
-				.index = y,
-			};
+	for (;;) {
+		struct todo top;
+		pthread_mutex_lock(&gig.sync_mutex);
+		again:
+		if (gig.n_execs_active == 0) {
+			pthread_mutex_unlock(&gig.sync_mutex);
+			break;
 		}
-		pthread_mutex_unlock(&o->counter_mutex);
-	}
+		int n = arrlen(gig.todos);
+		if (n == 0) {
+			struct timespec ts;
+			clock_gettime(CLOCK_REALTIME, &ts);
+			ts.tv_nsec += 250 * 1000000;
+			if (ts.tv_nsec >= 1000000000) {
+				ts.tv_nsec -= 1000000000;
+				ts.tv_sec++;
+			}
+			pthread_cond_timedwait(&gig.sync_cond, &gig.sync_mutex, &ts);
+			goto again;
+		}
 
-	if (n_new_todos > 0) {
-		pthread_mutex_lock(&gig.todos_mutex);
-		struct todo* dst = arraddnptr(gig.todos, n_new_todos);
-		memcpy(dst, new_todos, n_new_todos * sizeof(*dst));
-		qsort(gig.todos, arrlen(gig.todos), sizeof(*gig.todos), todo_compar);
-		pthread_mutex_unlock(&gig.todos_mutex);
-	}
+		top = gig.todos[n-1];
+		arrsetlen(gig.todos, n-1);
+		pthread_mutex_unlock(&gig.sync_mutex);
 
-	return 1;
+		struct exec* x = &gig.execs[top.index];
+		assert(x->counter == 0);
+
+		int n_frames = global_buffer_length;
+		const int last_frame = (x->iteration+1) * global_buffer_length;
+		int is_last = 0;
+		if (last_frame >= gig.n_frames) {
+			n_frames = gig.n_frames - x->iteration * global_buffer_length;
+			is_last = 1;
+		}
+
+		assert(n_frames > 0);
+
+		x->iteration++;
+		x->counter = x->counter_reset;
+		x->context.n_frames = n_frames;
+
+		x->fn(&x->context);
+
+		int n_new_todos = 0;
+		struct todo new_todos[1<<10];
+		for (int i = 0; i < x->n_yields; i++) {
+			int y = x->yields[i];
+			if (is_last && y < top.index) {
+				// this is the last execution; don't retrigger earlier
+				// opcodes
+				continue;
+			}
+			struct exec* o = &gig.execs[y];
+			pthread_mutex_lock(&o->counter_mutex);
+			assert(o->counter > 0);
+			o->counter--;
+			if (o->counter == 0) {
+				assert(n_new_todos < ARRAY_LENGTH(new_todos));
+				new_todos[n_new_todos++] = (struct todo){
+					.iteration = o->iteration,
+					.index = y,
+				};
+			}
+			pthread_mutex_unlock(&o->counter_mutex);
+		}
+
+		if (n_new_todos > 0 || is_last) {
+			pthread_mutex_lock(&gig.sync_mutex);
+			if (n_new_todos > 0) {
+				struct todo* dst = arraddnptr(gig.todos, n_new_todos);
+				memcpy(dst, new_todos, n_new_todos * sizeof(*dst));
+				qsort(gig.todos, arrlen(gig.todos), sizeof(*gig.todos), todo_compar);
+				if (n_new_todos >= 2) {
+					pthread_cond_broadcast(&gig.sync_cond);
+				} else {
+					pthread_cond_signal(&gig.sync_cond);
+				}
+			}
+			if (is_last) {
+				assert(gig.n_execs_active > 0);
+				gig.n_execs_active--;
+			}
+			pthread_mutex_unlock(&gig.sync_mutex);
+		}
+	}
 }
 
-void execute(void)
+static void* worker_thread(void* _arg)
 {
-	exec1();
+	work_it_out();
+	return NULL;
+}
+
+void render(int n_frames, int n_threads)
+{
+	gig.n_frames = n_frames;
+	gig.n_execs_active = arrlen(gig.execs);
+
+	const int n_spawn = n_threads - 1;
+	pthread_t* threads = calloc(n_spawn, sizeof *threads);
+	for (int i = 0; i < n_spawn; i++) {
+		assert(0 == pthread_create(&threads[i], NULL, worker_thread, NULL));
+	}
+
+	work_it_out();
+
+	for (int i = 0; i < n_spawn; i++) {
+		assert(0 == pthread_join(threads[i], NULL));
+	}
 }

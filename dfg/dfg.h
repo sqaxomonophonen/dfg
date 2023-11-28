@@ -19,10 +19,8 @@ void argscan(const char* fmt, ...);
 
 struct buf {
 	SIGNAL* data;
-	int n;
 	int width;
-	int width_stride;
-	int index_stride;
+	int stride;
 };
 
 struct cur {
@@ -35,7 +33,7 @@ static inline struct cur bufcur1(struct buf* buf)
 	assert(buf->width == 1);
 	return (struct cur) {
 		.p = buf->data,
-		.inc = buf->width_stride + buf->index_stride,
+		.inc = 1 + buf->stride,
 	};
 }
 
@@ -46,13 +44,14 @@ static inline SIGNAL cur1read(struct cur* cur)
 	return v;
 }
 
-struct op_context {
+struct opcode_context {
 	struct buf* in;
 	struct buf out;
 	void* usr;
 	int n_in;
+	int n_frames;
 };
-typedef void (*opcode_fn)(struct op_context*);
+typedef void (*opcode_fn)(struct opcode_context*);
 
 BUS opcode_arr(int output_width, opcode_fn, void* usr, int n_inputs, BUS* inputs);
 BUS opcode(int output_width, opcode_fn, void* usr, ...);
@@ -79,6 +78,7 @@ struct seq {
 
 extern struct seq global_seq;
 extern double     global_sample_rate;
+extern int        global_buffer_length;
 
 static inline void seq_set_bpm(struct seq* seq, double beats_per_minute)
 {
@@ -140,7 +140,7 @@ static inline void curve_add_segment(struct curve_segment** xs, struct curve_seg
 	// Maintain the curve using "musical drop sort":
 	//  - Curve must consist of unique positions in ascending order.
 	//  - Any segment in the curve with a position later or equal to the
-	//    one being append is removed first.
+	//    one being appended is removed first.
 	const int n = arrlen(*xs);
 	if (n > 0 && x.p <= (*xs)[n-1].p) {
 		int left = 0;
