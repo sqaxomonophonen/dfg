@@ -52,10 +52,10 @@ struct op_context {
 	void* usr;
 	int n_in;
 };
-typedef void (*op_process)(struct op_context*);
+typedef void (*opcode_fn)(struct op_context*);
 
-BUS opcode_arr(int output_width, op_process, void* usr, int n_inputs, BUS* inputs);
-BUS opcode(int output_width, op_process, void* usr, ...);
+BUS opcode_arr(int output_width, opcode_fn, void* usr, int n_inputs, BUS* inputs);
+BUS opcode(int output_width, opcode_fn, void* usr, ...);
 
 BUS song(void); // XXX call something else?
 

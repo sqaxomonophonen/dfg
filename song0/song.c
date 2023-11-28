@@ -5,7 +5,7 @@ BUS song(void)
 	set_bpm(120);
 	const int n_beats = 4*4;
 	for (int beat = 0; beat < n_beats; beat++) {
-		printf("beat %d -> %.0f\n", beat, relpos(0));
+		//printf("beat %d -> %.0f\n", beat, relpos(0));
 		adv(1);
 	}
 	//adv(n_beats);
@@ -16,5 +16,9 @@ BUS song(void)
 	BUS x3 = constant(0);
 	BUS x4 = constant(0);
 	BUS hw = hexwave(freq,x1,x2,x3,x4);
-	return hw;
+
+	BUS x5 = constant(0);
+	BUS a = add(hw,x5);
+
+	return a;
 }

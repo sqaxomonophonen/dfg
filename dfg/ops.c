@@ -1,6 +1,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <assert.h>
+#include <pthread.h>
 
 #include "idfg.h"
 
@@ -18,9 +19,14 @@ struct bus {
 	enum bus_type type;
 	union {
 		struct {
+			opcode_fn fn;
+			void* usr;
 			int n_inputs;
 			BUS* inputs;
-			struct op_context context;
+			int n_dependencies;
+			int n_dependees;
+			BUS* yield_arr;
+			int order;
 		} opcode;
 		struct {
 			BUS bus;
@@ -28,6 +34,7 @@ struct bus {
 		} slice;
 		SIGNAL constant;
 	};
+	int tag;
 };
 
 struct bus* busses;
@@ -39,50 +46,17 @@ static BUS new_bus(void)
 	return bus;
 }
 
-#define ASSERT_VALID_BUS(_b) { \
-	assert((_b >= 0) && "null bus"); \
-	assert((0 <= _b && _b < arrlen(busses)) && "bus out of range"); \
-}
-
-static inline struct bus* get_bus(BUS i)
+static inline struct bus* get_bus(BUS bi)
 {
-	ASSERT_VALID_BUS(i)
-	return &busses[i];
+	assert((bi >= 0) && "null bus");
+	assert((0 <= bi && bi < arrlen(busses)) && "bus out of range");
+	return &busses[bi];
 }
 
 int bus_width(BUS i)
 {
 	return get_bus(i)->width;
 }
-
-#if 0
-BUS op_new(
-	int n_in,
-	int out_width,
-	op_process process_fn,
-	void* usr,
-	struct op_bus* in_bus)
-{
-	struct op_context* ctx = calloc(1, sizeof *ctx);
-	ctx->usr = usr;
-	ctx->n_in = n_in;
-	ctx->n_out = n_out;
-	ctx->in = calloc(n_in, sizeof *ctx->in);
-	for (int i = 0; i < n_in; i++) {
-		struct op_bus* b = &in_bus[i];
-		if (b->assert_width != 0){
-			assert((bus_width(b->bus) == b->assert_width) && "unexpected bus width");
-		}
-	}
-
-	//ctx->out = calloc(n_out, sizeof *ctx->out);
-	//BUS out = bus_new(n_out);
-	//for (int i = 0; i < n_out; i++) {
-	//}
-	return out;
-}
-#endif
-
 
 BUS constant(SIGNAL v)
 {
@@ -109,21 +83,52 @@ BUS bus_slice(BUS i0, int offset, int width)
 	return i1;
 }
 
-BUS opcode_arr(int output_width, op_process fn, void* usr, int n_inputs, BUS* inputs)
+BUS opcode_arr(int output_width, opcode_fn fn, void* usr, int n_inputs, BUS* inputs)
 {
-	BUS i = new_bus();
-	struct bus* b = get_bus(i);
+	BUS bi = new_bus();
+	struct bus* b = get_bus(bi);
 	b->width = output_width;
 	b->type = BUS_OPCODE;
+	b->opcode.fn = fn;
+	b->opcode.usr = usr;
 	b->opcode.n_inputs = n_inputs;
 	b->opcode.inputs = calloc(n_inputs, sizeof *inputs);
 	memcpy(b->opcode.inputs, inputs, n_inputs * sizeof(*inputs));
-	// XXX TODO allocate buffer/context? execution plan?
-	return i;
+	for (int ii = 0; ii < n_inputs; ii++) {
+		struct bus* inp = get_bus(inputs[ii]);
+		for (;;) {
+			if (inp->type == BUS_SLICE) {
+				// follow slice chain
+				inp = get_bus(inp->slice.bus);
+				continue;
+			} else if (inp->type == BUS_CONSTANT) {
+				// constants are not dependencies
+			} else if (inp->type == BUS_OPCODE) {
+				int found = 0;
+				const int n = arrlen(inp->opcode.yield_arr);
+				for (int i = 0; i < n; i++) {
+					if (inp->opcode.yield_arr[i] == bi) {
+						found = 1;
+						break;
+					}
+				}
+				if (!found) {
+					arrput(inp->opcode.yield_arr, bi);
+					b->opcode.n_dependencies++;
+					inp->opcode.n_dependees++;
+					arrput(b->opcode.yield_arr, ii);
+				}
+			} else {
+				assert(!"unhandled type");
+			}
+			break;
+		}
+	}
+	return bi;
 }
 
 #include <stdarg.h>
-BUS opcode(int output_width, op_process fn, void* usr, ...)
+BUS opcode(int output_width, opcode_fn fn, void* usr, ...)
 {
 	BUS busses[1<<10];
 	va_list ap;
@@ -174,4 +179,192 @@ BUS curvegen(struct curve_segment* xs)
 	cs->xs = calloc(n, sz);
 	memcpy(cs->xs, xs, n * sz);
 	return opcode(1, curvegen_process, cs, NILBUS);
+}
+
+static void trace_bus(BUS bi)
+{
+	struct bus* b = get_bus(bi);
+	assert((b->tag == 0) && "already traced/tagged");
+	b->tag = 1;
+	if (b->type == BUS_SLICE) {
+		trace_bus(b->slice.bus);
+	} else if (b->type == BUS_CONSTANT) {
+		// ok
+	} else if (b->type == BUS_OPCODE) {
+		const int n = b->opcode.n_inputs;
+		for (int i = 0; i < n; i++) {
+			trace_bus(b->opcode.inputs[i]);
+		}
+	} else {
+		assert(!"unhandled type");
+	}
+}
+
+struct todo {
+	int iteration;
+	int index;
+};
+
+static int todo_compar(const void* va, const void* vb)
+{
+	const struct todo* a = va;
+	const struct todo* b = vb;
+	const int d0 = b->iteration - a->iteration;
+	if (d0 != 0) return d0;
+	const int d1 = b->index - a->index;
+	return d1;
+}
+
+struct exec {
+	opcode_fn fn;
+	struct op_context context;
+	pthread_mutex_t counter_mutex;
+	int counter;
+	int counter_reset;
+	int n_yields;
+	int* yields;
+	int iteration;
+};
+
+struct gig {
+	struct exec* execs;
+	pthread_mutex_t todos_mutex;
+	struct todo* todos;
+} gig;
+
+void band_bus(BUS bi)
+{
+	trace_bus(bi);
+
+	const int n_busses = arrlen(busses);
+	int n_orphans = 0;
+	BUS* opcode_busses = NULL;
+	for (BUS i = 0; i < n_busses; i++) {
+		struct bus* bus = get_bus(i);
+		if (!bus->tag) {
+			n_orphans++;
+			continue;
+		}
+		if (bus->type == BUS_SLICE) {
+		} else if (bus->type == BUS_CONSTANT) {
+		} else if (bus->type == BUS_OPCODE) {
+			arrput(opcode_busses, i);
+		} else {
+			assert(!"unhandled type");
+		}
+	}
+	if (n_orphans > 0) printf("[WARNING] oprhan bus count: %d\n", n_orphans);
+
+	BUS* order = NULL;
+	for (int i = 0; i < arrlen(opcode_busses); i++) {
+		BUS oi = opcode_busses[i];
+		struct bus* bus = get_bus(oi);
+		assert(bus->type == BUS_OPCODE);
+		bus->tag = bus->opcode.n_dependencies;
+		if (bus->opcode.n_dependencies == 0) {
+			arrput(order, oi);
+		}
+	}
+
+	int c = 0;
+	while (c < arrlen(order)) {
+		BUS oi = order[c++];
+		struct bus* bus = get_bus(oi);
+		assert(bus->type == BUS_OPCODE);
+		for (int i = 0; i < arrlen(bus->opcode.yield_arr); i++) {
+			BUS yi = bus->opcode.yield_arr[i];
+			if (yi < oi) continue;
+			struct bus* yb = get_bus(yi);
+			assert(yb->tag > 0);
+			yb->tag--;
+			if (yb->tag == 0) {
+				arrput(order, yi);
+			}
+		}
+	}
+
+	const int n_execs = arrlen(order);
+	assert(c == n_execs);
+	assert(n_execs == arrlen(opcode_busses));
+
+	for (int i0 = 0; i0 < n_execs; i0++) {
+		struct bus* bus = get_bus(order[i0]);
+		assert(bus->type == BUS_OPCODE);
+		bus->opcode.order = i0;
+	}
+
+	pthread_mutex_init(&gig.todos_mutex, NULL);
+	arrsetlen(gig.execs, n_execs);
+
+	for (int i0 = 0; i0 < n_execs; i0++) {
+		struct bus* bus = get_bus(order[i0]);
+		struct exec* x = &gig.execs[i0];
+		x->fn = bus->opcode.fn;
+		x->context.usr = bus->opcode.usr;
+		// TODO setup x->context.in
+		// TODO setup x->context.out
+		// TODO setup x->context.n_in
+		pthread_mutex_init(&x->counter_mutex, NULL);
+		x->counter = bus->opcode.n_dependencies;
+		x->counter_reset = x->counter + bus->opcode.n_dependees;
+		x->n_yields = arrlen(bus->opcode.yield_arr);
+		x->yields = calloc(x->n_yields, sizeof *x->yields);
+		for (int i1 = 0; i1 < x->n_yields; i1++) {
+			x->yields[i1] = get_bus(bus->opcode.yield_arr[i1])->opcode.order;
+		}
+	}
+}
+
+static int exec1(void)
+{
+	struct todo top;
+	pthread_mutex_lock(&gig.todos_mutex);
+	int n = arrlen(gig.todos);
+	if (n == 0) {
+		pthread_mutex_unlock(&gig.todos_mutex);
+		return 0;
+	}
+	top = gig.todos[n-1];
+	arrsetlen(gig.todos, n-1);
+	pthread_mutex_unlock(&gig.todos_mutex);
+
+	struct exec* x = &gig.execs[top.index];
+	assert(x->counter == 0);
+	x->iteration++;
+	x->counter = x->counter_reset;
+
+	x->fn(&x->context);
+
+	int n_new_todos = 0;
+	struct todo new_todos[1<<10];
+	for (int i = 0; i < x->n_yields; i++) {
+		int y = x->yields[i];
+		struct exec* o = &gig.execs[y];
+		pthread_mutex_lock(&o->counter_mutex);
+		assert(o->counter > 0);
+		o->counter--;
+		if (o->counter == 0) {
+			assert(n_new_todos < ARRAY_LENGTH(new_todos));
+			new_todos[n_new_todos++] = (struct todo){
+				.iteration = o->iteration,
+				.index = y,
+			};
+		}
+		pthread_mutex_unlock(&o->counter_mutex);
+	}
+
+	if (n_new_todos > 0) {
+		pthread_mutex_lock(&gig.todos_mutex);
+		struct todo* dst = arraddnptr(gig.todos, n_new_todos);
+		memcpy(dst, new_todos, n_new_todos * sizeof(*dst));
+		qsort(gig.todos, arrlen(gig.todos), sizeof(*gig.todos), todo_compar);
+		pthread_mutex_unlock(&gig.todos_mutex);
+	}
+
+	return 1;
+}
+
+void execute(void)
+{
+	exec1();
 }
