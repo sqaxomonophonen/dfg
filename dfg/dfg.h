@@ -75,9 +75,10 @@ BUS song(void); // XXX call something else?
 
 BUS constant(SIGNAL v);
 BUS add(BUS b0, BUS b1);
-BUS vadd(BUS b0, ...);
+BUS sub(BUS b0, BUS b1);
 BUS mul(BUS b0, BUS b1);
-//BUS sub(BUS b0, BUS b1);
+BUS divide(BUS b0, BUS b1);
+BUS vadd(BUS b0, ...);
 
 BUS hexwave(BUS freq, BUS reflect, BUS peak_time, BUS half_height, BUS zero_wait);
 

@@ -156,28 +156,37 @@ BUS opcode(int output_width, opcode_fn fn, void* usr, ...)
 	return opcode_arr(output_width, fn, usr, wp - busses, busses);
 }
 
-static void add_process(struct opcode_context* ctx)
-{
-	const int w = ctx->out.width;
-	struct cur out = bufcurw(w, &ctx->out);
-	struct cur in0 = bufcurw(w, &ctx->in[0]);
-	struct cur in1 = bufcurw(w, &ctx->in[1]);
-	const int n_frames = ctx->n_frames;
-	for (int i0 = 0; i0 < n_frames; i0++) {
-		SIGNAL* outp = curw(&out);
-		SIGNAL* in0p = curw(&in0);
-		SIGNAL* in1p = curw(&in1);
-		for (int i1 = 0; i1 < w; i1++) {
-			*(outp++) = *(in0p++) + *(in1p++);
-		}
-	}
+#define DEF_XY(NAME,EXPR) \
+static void NAME ## _process(struct opcode_context* ctx) \
+{ \
+	const int w = ctx->out.width; \
+	struct cur out = bufcurw(w, &ctx->out); \
+	struct cur in0 = bufcurw(w, &ctx->in[0]); \
+	struct cur in1 = bufcurw(w, &ctx->in[1]); \
+	const int n_frames = ctx->n_frames; \
+	for (int i0 = 0; i0 < n_frames; i0++) { \
+		SIGNAL* outp = curw(&out); \
+		SIGNAL* in0p = curw(&in0); \
+		SIGNAL* in1p = curw(&in1); \
+		for (int i1 = 0; i1 < w; i1++) { \
+			const SIGNAL x = *(in0p++); \
+			const SIGNAL y = *(in1p++); \
+			const SIGNAL r = (EXPR); \
+			*(outp++) = r; \
+		} \
+	} \
+} \
+  \
+BUS NAME(BUS b0, BUS b1) \
+{ \
+	assert((bus_width(b0) == bus_width(b1)) && "cannot " #NAME " busses of different widths"); \
+	return opcode(bus_width(b0), NAME ## _process, NULL, b0, b1, NILBUS); \
 }
 
-BUS add(BUS b0, BUS b1)
-{
-	assert((bus_width(b0) == bus_width(b1)) && "cannot add busses of different widths");
-	return opcode(bus_width(b0), add_process, NULL, b0, b1, NILBUS);
-}
+DEF_XY(mul,    (x*y))
+DEF_XY(add,    (x+y))
+DEF_XY(sub,    (x-y))
+DEF_XY(divide, (x/y))
 
 BUS vadd(BUS bus0, ...)
 {
@@ -194,28 +203,6 @@ BUS vadd(BUS bus0, ...)
 	return bus;
 }
 
-static void mul_process(struct opcode_context* ctx)
-{
-	const int w = ctx->out.width;
-	struct cur out = bufcurw(w, &ctx->out);
-	struct cur in0 = bufcurw(w, &ctx->in[0]);
-	struct cur in1 = bufcurw(w, &ctx->in[1]);
-	const int n_frames = ctx->n_frames;
-	for (int i0 = 0; i0 < n_frames; i0++) {
-		SIGNAL* outp = curw(&out);
-		SIGNAL* in0p = curw(&in0);
-		SIGNAL* in1p = curw(&in1);
-		for (int i1 = 0; i1 < w; i1++) {
-			*(outp++) = *(in0p++) * *(in1p++);
-		}
-	}
-}
-
-BUS mul(BUS b0, BUS b1)
-{
-	assert((bus_width(b0) == bus_width(b1)) && "cannot multiply busses of different widths");
-	return opcode(bus_width(b0), mul_process, NULL, b0, b1, NILBUS);
-}
 
 struct curvegen_state {
 	int n;
