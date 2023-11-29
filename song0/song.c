@@ -11,11 +11,11 @@ BUS song(void)
 	//adv(n_beats);
 
 	BUS freq = constant(0.004);
-	BUS x1 = constant(0);
-	BUS x2 = constant(0);
-	BUS x3 = constant(0);
-	BUS x4 = constant(0);
-	BUS hw = hexwave(freq,x1,x2,x3,x4);
+	BUS reflect = constant(1);
+	BUS peak_time = constant(0);
+	BUS half_height = constant(0);
+	BUS zero_wait = constant(0);
+	BUS hw = hexwave(freq,reflect,peak_time,half_height,zero_wait);
 
 	BUS a = mul(hw,constant(0.02));
 
