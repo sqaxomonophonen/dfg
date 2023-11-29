@@ -8,5 +8,5 @@ else
 	target="$1"
 	shift
 fi
-cc -Wall ${target}.c -o ${target} -L${base} -I${base} -ldfg -lm
+cc -Wall -O0 -g ${target}.c -o ${target} -L${base} -I${base} -ldfg -lm
 ./${target} $*

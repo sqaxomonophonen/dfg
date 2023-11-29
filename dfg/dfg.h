@@ -28,20 +28,35 @@ struct cur {
 	int inc;
 };
 
-static inline struct cur bufcur1(struct buf* buf)
+static inline struct cur bufcur(struct buf* buf)
 {
-	assert(buf->width == 1);
 	return (struct cur) {
 		.p = buf->data,
-		.inc = 1 + buf->stride,
+		.inc = buf->width + buf->stride,
 	};
+}
+
+static inline struct cur bufcurw(int width, struct buf* buf)
+{
+	assert(buf->width == width);
+	return bufcur(buf);
+}
+
+static inline struct cur bufcur1(struct buf* buf)
+{
+	return bufcurw(1, buf);
+}
+
+static inline SIGNAL* curw(struct cur* cur)
+{
+	SIGNAL* p = cur->p;
+	cur->p += cur->inc;
+	return p;
 }
 
 static inline SIGNAL cur1read(struct cur* cur)
 {
-	SIGNAL v = *(cur->p);
-	cur->p += cur->inc;
-	return v;
+	return curw(cur)[0];
 }
 
 struct opcode_context {
@@ -60,6 +75,7 @@ BUS song(void); // XXX call something else?
 
 BUS constant(SIGNAL v);
 BUS add(BUS b0, BUS b1);
+BUS vadd(BUS b0, ...);
 //BUS sub(BUS b0, BUS b1);
 //BUS mul(BUS b0, BUS b1);
 

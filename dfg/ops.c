@@ -1,10 +1,16 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <assert.h>
-#include <pthread.h>
 #include <time.h>
+#include <stdarg.h>
 
 #include "idfg.h"
+
+#define PTHREADED
+
+#ifdef PTHREADED
+#include <pthread.h>
+#endif
 
 struct seq global_seq;
 double global_sample_rate;
@@ -133,7 +139,6 @@ BUS opcode_arr(int output_width, opcode_fn fn, void* usr, int n_inputs, BUS* inp
 	return bi;
 }
 
-#include <stdarg.h>
 BUS opcode(int output_width, opcode_fn fn, void* usr, ...)
 {
 	BUS busses[1<<10];
@@ -153,7 +158,19 @@ BUS opcode(int output_width, opcode_fn fn, void* usr, ...)
 
 static void add_process(struct opcode_context* ctx)
 {
-	assert(!"TODO");
+	const int w = ctx->out.width;
+	struct cur out = bufcurw(w, &ctx->out);
+	struct cur in0 = bufcurw(w, &ctx->in[0]);
+	struct cur in1 = bufcurw(w, &ctx->in[1]);
+	const int n_frames = ctx->n_frames;
+	for (int i0 = 0; i0 < n_frames; i0++) {
+		SIGNAL* outp = curw(&out);
+		SIGNAL* in0p = curw(&in0);
+		SIGNAL* in1p = curw(&in1);
+		for (int i1 = 0; i1 < w; i1++) {
+			*(outp++) = *(in0p++) + *(in1p++);
+		}
+	}
 }
 
 BUS add(BUS b0, BUS b1)
@@ -164,6 +181,21 @@ BUS add(BUS b0, BUS b1)
 	//return op_new(2, 1, add_process, wp,
 	const int w = bus_width(b0);
 	return opcode(w, add_process, NULL, b0, b1, NILBUS);
+}
+
+BUS vadd(BUS bus0, ...)
+{
+	va_list ap;
+	va_start(ap, bus0);
+	BUS bus = bus0;
+	for (;;) {
+		BUS busx = va_arg(ap, BUS);
+		if (busx == NILBUS) break;
+		assert(busx >= 0);
+		bus = add(bus, busx);
+	}
+	va_end(ap);
+	return bus;
 }
 
 struct curvegen_state {
@@ -224,7 +256,9 @@ static int todo_compar(const void* va, const void* vb)
 struct exec {
 	opcode_fn fn;
 	struct opcode_context context;
+	#ifdef PTHREADED
 	pthread_mutex_t counter_mutex;
+	#endif
 	int counter;
 	int counter_reset;
 	int n_yields;
@@ -235,8 +269,10 @@ struct exec {
 struct gig {
 	int n_frames;
 	struct exec* execs;
+	#ifdef PTHREADED
 	pthread_mutex_t sync_mutex;
 	pthread_cond_t sync_cond;
+	#endif
 	int n_execs_active;
 	struct todo* todos;
 	SIGNAL* constants;
@@ -279,8 +315,8 @@ void band_bus(BUS bi)
 		assert(bus->type == BUS_OPCODE);
 		bus->tag = bus->opcode.n_dependencies;
 		if (bus->opcode.n_dependencies == 0) {
+			arrput(gig.todos, ((struct todo) { .index = arrlen(order) }));
 			arrput(order, oi);
-			arrput(gig.todos, ((struct todo) { .index = oi }));
 		}
 	}
 
@@ -311,13 +347,16 @@ void band_bus(BUS bi)
 		bus->opcode.order = i0;
 	}
 
+	#ifdef PTHREADED
 	pthread_mutex_init(&gig.sync_mutex, NULL);
 	pthread_cond_init(&gig.sync_cond, NULL);
+	#endif
 	arrsetlen(gig.execs, n_execs);
 
 	for (int i0 = 0; i0 < n_execs; i0++) {
 		struct bus* bus = get_bus(order[i0]);
 		struct exec* x = &gig.execs[i0];
+		memset(x, 0, sizeof *x);
 		x->fn = bus->opcode.fn;
 		x->context.usr = bus->opcode.usr;
 		buf_init(&x->context.out, bus->width, global_buffer_length);
@@ -359,7 +398,9 @@ void band_bus(BUS bi)
 			x->context.in[i1] = inbuf;
 		}
 
+		#ifdef PTHREADED
 		pthread_mutex_init(&x->counter_mutex, NULL);
+		#endif
 		x->counter = bus->opcode.n_dependencies;
 		x->counter_reset = x->counter + bus->opcode.n_dependees;
 		x->n_yields = arrlen(bus->opcode.yield_arr);
@@ -372,31 +413,42 @@ void band_bus(BUS bi)
 
 static void work_it_out(void)
 {
+	#ifdef PTHREADED
+	pthread_mutex_lock(&gig.sync_mutex);
+	#endif
 	for (;;) {
 		struct todo top;
-		pthread_mutex_lock(&gig.sync_mutex);
-		again:
 		if (gig.n_execs_active == 0) {
+			#ifdef PTHREADED
 			pthread_mutex_unlock(&gig.sync_mutex);
+			#endif
 			break;
 		}
 		int n = arrlen(gig.todos);
 		if (n == 0) {
+			#ifdef PTHREADED
 			struct timespec ts;
 			clock_gettime(CLOCK_REALTIME, &ts);
-			ts.tv_nsec += 250 * 1000000;
+			ts.tv_nsec += 50 * 1000000;
 			if (ts.tv_nsec >= 1000000000) {
 				ts.tv_nsec -= 1000000000;
 				ts.tv_sec++;
 			}
 			pthread_cond_timedwait(&gig.sync_cond, &gig.sync_mutex, &ts);
-			goto again;
+			continue;
+			#else
+			assert(!"UNREACHABLE");
+			#endif
 		}
 
+		assert(n > 0);
 		top = gig.todos[n-1];
 		arrsetlen(gig.todos, n-1);
+		#ifdef PTHREADED
 		pthread_mutex_unlock(&gig.sync_mutex);
+		#endif
 
+		assert(0 <= top.index && top.index < arrlen(gig.execs));
 		struct exec* x = &gig.execs[top.index];
 		assert(x->counter == 0);
 
@@ -426,7 +478,9 @@ static void work_it_out(void)
 				continue;
 			}
 			struct exec* o = &gig.execs[y];
+			#ifdef PTHREADED
 			pthread_mutex_lock(&o->counter_mutex);
+			#endif
 			assert(o->counter > 0);
 			o->counter--;
 			if (o->counter == 0) {
@@ -436,50 +490,61 @@ static void work_it_out(void)
 					.index = y,
 				};
 			}
+			#ifdef PTHREADED
 			pthread_mutex_unlock(&o->counter_mutex);
+			#endif
 		}
 
+		#ifdef PTHREADED
+		pthread_mutex_lock(&gig.sync_mutex);
+		#endif
 		if (n_new_todos > 0 || is_last) {
-			pthread_mutex_lock(&gig.sync_mutex);
 			if (n_new_todos > 0) {
 				struct todo* dst = arraddnptr(gig.todos, n_new_todos);
 				memcpy(dst, new_todos, n_new_todos * sizeof(*dst));
 				qsort(gig.todos, arrlen(gig.todos), sizeof(*gig.todos), todo_compar);
+				#ifdef PTHREADED
 				if (n_new_todos >= 2) {
 					pthread_cond_broadcast(&gig.sync_cond);
 				} else {
 					pthread_cond_signal(&gig.sync_cond);
 				}
+				#endif
 			}
 			if (is_last) {
 				assert(gig.n_execs_active > 0);
 				gig.n_execs_active--;
 			}
-			pthread_mutex_unlock(&gig.sync_mutex);
 		}
 	}
 }
 
+#ifdef PTHREADED
 static void* worker_thread(void* _arg)
 {
 	work_it_out();
 	return NULL;
 }
+#endif
 
 void render(int n_frames, int n_threads)
 {
 	gig.n_frames = n_frames;
 	gig.n_execs_active = arrlen(gig.execs);
 
+	#ifdef PTHREADED
 	const int n_spawn = n_threads - 1;
 	pthread_t* threads = calloc(n_spawn, sizeof *threads);
 	for (int i = 0; i < n_spawn; i++) {
 		assert(0 == pthread_create(&threads[i], NULL, worker_thread, NULL));
 	}
+	#endif
 
 	work_it_out();
 
+	#ifdef PTHREADED
 	for (int i = 0; i < n_spawn; i++) {
 		assert(0 == pthread_join(threads[i], NULL));
 	}
+	#endif
 }
