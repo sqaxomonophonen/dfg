@@ -176,11 +176,7 @@ static void add_process(struct opcode_context* ctx)
 BUS add(BUS b0, BUS b1)
 {
 	assert((bus_width(b0) == bus_width(b1)) && "cannot add busses of different widths");
-	//int* wp = calloc(1, sizeof *wp);
-	//*wp = bus_width(b0);
-	//return op_new(2, 1, add_process, wp,
-	const int w = bus_width(b0);
-	return opcode(w, add_process, NULL, b0, b1, NILBUS);
+	return opcode(bus_width(b0), add_process, NULL, b0, b1, NILBUS);
 }
 
 BUS vadd(BUS bus0, ...)
@@ -196,6 +192,29 @@ BUS vadd(BUS bus0, ...)
 	}
 	va_end(ap);
 	return bus;
+}
+
+static void mul_process(struct opcode_context* ctx)
+{
+	const int w = ctx->out.width;
+	struct cur out = bufcurw(w, &ctx->out);
+	struct cur in0 = bufcurw(w, &ctx->in[0]);
+	struct cur in1 = bufcurw(w, &ctx->in[1]);
+	const int n_frames = ctx->n_frames;
+	for (int i0 = 0; i0 < n_frames; i0++) {
+		SIGNAL* outp = curw(&out);
+		SIGNAL* in0p = curw(&in0);
+		SIGNAL* in1p = curw(&in1);
+		for (int i1 = 0; i1 < w; i1++) {
+			*(outp++) = *(in0p++) * *(in1p++);
+		}
+	}
+}
+
+BUS mul(BUS b0, BUS b1)
+{
+	assert((bus_width(b0) == bus_width(b1)) && "cannot multiply busses of different widths");
+	return opcode(bus_width(b0), mul_process, NULL, b0, b1, NILBUS);
 }
 
 struct curvegen_state {
@@ -264,6 +283,7 @@ struct exec {
 	int n_yields;
 	int* yields;
 	int iteration;
+	int is_main_output;
 };
 
 struct gig {
@@ -276,6 +296,8 @@ struct gig {
 	int n_execs_active;
 	struct todo* todos;
 	SIGNAL* constants;
+	int n_channels;
+	FILE* wav;
 } gig;
 
 static void buf_init(struct buf* buf, int width, int n_frames)
@@ -285,8 +307,11 @@ static void buf_init(struct buf* buf, int width, int n_frames)
 	buf->data = calloc(width*n_frames, sizeof *buf->data);
 }
 
+
 void band_bus(BUS bi)
 {
+	gig.n_channels = bus_width(bi);
+
 	trace_bus(bi);
 
 	const int n_busses = arrlen(busses);
@@ -357,6 +382,7 @@ void band_bus(BUS bi)
 		struct bus* bus = get_bus(order[i0]);
 		struct exec* x = &gig.execs[i0];
 		memset(x, 0, sizeof *x);
+		x->is_main_output = order[i0] == bi;
 		x->fn = bus->opcode.fn;
 		x->context.usr = bus->opcode.usr;
 		buf_init(&x->context.out, bus->width, global_buffer_length);
@@ -407,6 +433,88 @@ void band_bus(BUS bi)
 		x->yields = calloc(x->n_yields, sizeof *x->yields);
 		for (int i1 = 0; i1 < x->n_yields; i1++) {
 			x->yields[i1] = get_bus(bus->opcode.yield_arr[i1])->opcode.order;
+		}
+	}
+}
+
+static inline void wav__u8(FILE* file, uint8_t v)
+{
+	assert(fputc(v, file) == v);
+}
+
+static inline void wav__u16(FILE* file, uint16_t v)
+{
+	for (int shift = 0; shift < 16; shift += 8) wav__u8(file, (v >> shift) & 0xff);
+}
+
+static inline void wav__i16(FILE* file, int16_t v)
+{
+	wav__u16(file, v);
+}
+
+static inline void wav__u32(FILE* file, uint32_t v)
+{
+	for (int shift = 0; shift < 32; shift += 16) wav__u16(file, (v >> shift) & 0xffff);
+}
+
+static inline void wav__str(FILE* file, const char* str)
+{
+	size_t n = strlen(str);
+	assert(fwrite(str, sizeof *str, n, file) == n);
+}
+
+static inline void wav_header(FILE* file, int sample_rate, int n_channels, int n_frames)
+{
+	wav__str(file, "RIFF");
+	const int data_length = 2 * n_channels * n_frames;
+	wav__u32(file, data_length + 36);
+	wav__str(file, "WAVEfmt ");
+	wav__u32(file, 16);
+	wav__u16(file, 1);
+	wav__u16(file, n_channels);
+	wav__u32(file, sample_rate);
+	wav__u32(file, sample_rate * n_channels * 2);
+	wav__u16(file, n_channels * 2);
+	wav__u16(file, 16); // bits per sample
+	wav__str(file, "data");
+	wav__u32(file, data_length);
+
+}
+
+static inline FILE* wav_begin(const char* path, int sample_rate, int n_channels, int n_frames)
+{
+	FILE* file = fopen(path, "wb+");
+	wav_header(file, sample_rate, n_channels, n_frames);
+	return file;
+}
+
+static inline void wav_end(FILE* file)
+{
+	fclose(file);
+}
+
+/* emit a single sample (NOTE: 1 mono frame contains 1 sample; 1 stereo frame
+ * contains 2 samples) */
+static inline void wav_sample(FILE* file, float sample)
+{
+	wav__i16(file, (int16_t)(fminf(1.0f, fmaxf(-1.0f, sample)) * 32767.0f));
+}
+
+static inline void wav_samples(FILE* file, float* samples, int n_samples)
+{
+	for (int i = 0; i < n_samples; i++) wav_sample(file, samples[i]);
+}
+
+static void write_output(struct buf* buf, int n_frames)
+{
+	if (gig.wav != NULL) {
+		struct cur cur = bufcur(buf);
+		const int w = buf->width;
+		for (int i0 = 0; i0 < n_frames; i0++) {
+			SIGNAL* x = curw(&cur);
+			for (int i1 = 0; i1 < w; i1++) {
+				wav_sample(gig.wav, x[i1]);
+			}
 		}
 	}
 }
@@ -467,6 +575,9 @@ static void work_it_out(void)
 		x->context.n_frames = n_frames;
 
 		x->fn(&x->context);
+		if (x->is_main_output) {
+			write_output(&x->context.out, n_frames);
+		}
 
 		int n_new_todos = 0;
 		struct todo new_todos[1<<10];
@@ -531,6 +642,7 @@ void render(int n_frames, int n_threads)
 {
 	gig.n_frames = n_frames;
 	gig.n_execs_active = arrlen(gig.execs);
+	gig.wav = wav_begin("out.wav", global_sample_rate, gig.n_channels, n_frames);
 
 	#ifdef PTHREADED
 	const int n_spawn = n_threads - 1;
@@ -547,4 +659,6 @@ void render(int n_frames, int n_threads)
 		assert(0 == pthread_join(threads[i], NULL));
 	}
 	#endif
+
+	wav_end(gig.wav);
 }

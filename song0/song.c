@@ -10,15 +10,14 @@ BUS song(void)
 	}
 	//adv(n_beats);
 
-	BUS freq = constant(0.1);
+	BUS freq = constant(0.004);
 	BUS x1 = constant(0);
 	BUS x2 = constant(0);
 	BUS x3 = constant(0);
 	BUS x4 = constant(0);
 	BUS hw = hexwave(freq,x1,x2,x3,x4);
 
-	BUS x5 = constant(0);
-	BUS a = add(hw,x5);
+	BUS a = mul(hw,constant(0.02));
 
 	return a;
 }
