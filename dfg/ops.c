@@ -375,7 +375,7 @@ void band_bus(BUS bi)
 					assert((inbuf.width == 1) && "what's going on");
 					assert((bo->width == 1) && "dude no");
 					inbuf.data = &gig.constants[bo->constant.index];
-
+					inbuf.stride = -1;
 					break;
 				} else if (bo->type == BUS_OPCODE) {
 					struct exec* xo = &gig.execs[bo->opcode.order];
