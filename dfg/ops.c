@@ -207,11 +207,44 @@ BUS vadd(BUS bus0, ...)
 struct curvegen_state {
 	int n;
 	struct curve_segment* xs;
+	int index;
+	int position;
+	int p0;
 };
 
 static void curvegen_process(struct opcode_context* ctx)
 {
-	assert(!"TODO");
+	struct curvegen_state* st = ctx->usr;
+	struct cur out = bufcur1(&ctx->out);
+
+	int remaining = ctx->n_frames;
+	while (remaining > 0) {
+		assert(0 <= st->index && st->index < st->n);
+		struct curve_segment* x0 = &st->xs[st->index];
+		struct curve_segment* x1 = (st->index+1) < st->n ? &st->xs[st->index+1] : NULL;
+		int n_frames = remaining;
+		const int do_incr = x1 != NULL && (st->position + n_frames) >= x1->p;
+		if (do_incr) {
+			n_frames = x1->p - st->position;
+		}
+		const SIGNAL t0 = st->position - st->p0;
+		for (int i = 0; i < n_frames; i++) {
+			const SIGNAL t = t0+(SIGNAL)i;
+			curw(&out)[0] =
+				x0->c0         +
+				x0->c1 * t     +
+				x0->c2 * t*t   +
+				x0->c3 * t*t*t ;
+		}
+
+		st->position += n_frames;
+		remaining -= n_frames;
+
+		if (do_incr) {
+			st->index++;
+			st->p0 = st->position;
+		}
+	}
 }
 
 BUS curvegen(struct curve_segment* xs)

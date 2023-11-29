@@ -152,6 +152,8 @@ struct curve_segment {
 	SIGNAL c0, c1, c2, c3;
 };
 
+typedef struct curve_segment* CURVE;
+
 static inline void curve_add_segment(struct curve_segment** xs, struct curve_segment x)
 {
 	// Maintain the curve using "musical drop sort":
