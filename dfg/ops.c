@@ -107,7 +107,8 @@ BUS opcode_arr(int output_width, opcode_fn fn, void* usr, int n_inputs, BUS* inp
 	b->opcode.inputs = calloc(n_inputs, sizeof *inputs);
 	memcpy(b->opcode.inputs, inputs, n_inputs * sizeof(*inputs));
 	for (int ii = 0; ii < n_inputs; ii++) {
-		struct bus* inp = get_bus(inputs[ii]);
+		BUS ibi = inputs[ii];
+		struct bus* inp = get_bus(ibi);
 		for (;;) {
 			if (inp->type == BUS_SLICE) {
 				// follow slice chain
@@ -119,16 +120,18 @@ BUS opcode_arr(int output_width, opcode_fn fn, void* usr, int n_inputs, BUS* inp
 				int found = 0;
 				const int n = arrlen(inp->opcode.yield_arr);
 				for (int i = 0; i < n; i++) {
-					if (inp->opcode.yield_arr[i] == bi) {
+					const BUS v = inp->opcode.yield_arr[i];
+					if (v == bi) {
+						assert(found == 0);
 						found = 1;
-						break;
 					}
+					assert(v != ibi);
 				}
 				if (!found) {
 					arrput(inp->opcode.yield_arr, bi);
 					b->opcode.n_dependencies++;
 					inp->opcode.n_dependees++;
-					arrput(b->opcode.yield_arr, ii);
+					arrput(b->opcode.yield_arr, ibi);
 				}
 			} else {
 				assert(!"unhandled type");
@@ -402,13 +405,18 @@ void band_bus(BUS bi)
 		struct bus* bus = get_bus(order[i0]);
 		struct exec* x = &gig.execs[i0];
 		memset(x, 0, sizeof *x);
+		buf_init(&x->context.out, bus->width, global_buffer_length);
+	}
+
+	for (int i0 = 0; i0 < n_execs; i0++) {
+		struct bus* bus = get_bus(order[i0]);
+		struct exec* x = &gig.execs[i0];
+		const int n_inputs = bus->opcode.n_inputs;
 		x->is_main_output = order[i0] == bi;
 		x->fn = bus->opcode.fn;
-		x->context.usr = bus->opcode.usr;
-		buf_init(&x->context.out, bus->width, global_buffer_length);
-		const int n_inputs = bus->opcode.n_inputs;
 		x->context.n_in = n_inputs;
 		x->context.in = calloc(n_inputs, sizeof *x->context.in);
+		x->context.usr = bus->opcode.usr;
 		for (int i1 = 0; i1 < n_inputs; i1++) {
 			struct bus* bo = get_bus(bus->opcode.inputs[i1]);
 			int offset = 0;
@@ -436,7 +444,6 @@ void band_bus(BUS bi)
 					offset += o;
 					bo = get_bus(bo->slice.bus);
 					assert(bo->width >= (o+w));
-
 				} else {
 					assert(!"unhandled type");
 				}
