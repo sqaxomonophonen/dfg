@@ -6,7 +6,7 @@ all: libdfg.a
 
 O=\
 	stb_ds.o stb_hexwave.o stb_image.o stb_image_write.o stb_perlin.o \
-	lib.o ops.o
+	lib.o ops.o opcodes.o
 
 libdfg.a: ${O}
 	ar rcs $@ $^
