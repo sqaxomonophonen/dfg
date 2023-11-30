@@ -264,7 +264,7 @@ BUS curvegen(struct curve_segment* xs)
 static void trace_bus(BUS bi)
 {
 	struct bus* b = get_bus(bi);
-	assert((b->tag == 0) && "already traced/tagged");
+	if (b->tag) return;
 	b->tag = 1;
 	if (b->type == BUS_SLICE) {
 		trace_bus(b->slice.bus);
