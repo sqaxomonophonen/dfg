@@ -20,6 +20,7 @@ BUS song(void)
 	BUS hw = hexwave(freq,reflect,peak_time,half_height,zero_wait);
 	BUS cu = curvegen(gain_curve);
 	cu = mul(cu,cu);
+	scope(cu, "curve.wav");
 	BUS a = mul(hw,cu);
 	a = mul(a,constant(0.2));
 

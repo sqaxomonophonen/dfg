@@ -45,10 +45,19 @@ struct bus {
 			int index;
 		} constant;
 	};
+	struct buf* out;
 	int tag;
 };
 
 struct bus* busses;
+
+struct scope {
+	BUS bus;
+	const char* path;
+	FILE* wav;
+	struct buf* buf;
+};
+struct scope* scopes;
 
 static BUS new_bus(void)
 {
@@ -78,6 +87,14 @@ BUS constant(SIGNAL v)
 	b->type = BUS_CONSTANT;
 	b->constant.value = v;
 	return i;
+}
+
+void scope(BUS bi, const char* path)
+{
+	struct scope* scope = arraddnptr(scopes, 1);
+	memset(scope, 0, sizeof *scope);
+	scope->bus = bi;
+	scope->path = path;
 }
 
 BUS bus_slice(BUS i0, int offset, int width)
@@ -204,7 +221,7 @@ struct exec {
 	int n_yields;
 	int* yields;
 	int iteration;
-	int is_main_output;
+	struct scope* scope;
 };
 
 struct gig {
@@ -218,7 +235,6 @@ struct gig {
 	struct todo* todos;
 	SIGNAL* constants;
 	int n_channels;
-	FILE* wav;
 } gig;
 
 static void buf_init(struct buf* buf, int width, int n_frames)
@@ -231,6 +247,8 @@ static void buf_init(struct buf* buf, int width, int n_frames)
 
 void band_bus(BUS bi)
 {
+	scope(bi, "main.wav");
+
 	gig.n_channels = bus_width(bi);
 
 	trace_bus(bi);
@@ -304,13 +322,13 @@ void band_bus(BUS bi)
 		struct exec* x = &gig.execs[i0];
 		memset(x, 0, sizeof *x);
 		buf_init(&x->context.out, bus->width, global_buffer_length);
+		bus->out = &x->context.out;
 	}
 
 	for (int i0 = 0; i0 < n_execs; i0++) {
 		struct bus* bus = get_bus(order[i0]);
 		struct exec* x = &gig.execs[i0];
 		const int n_inputs = bus->opcode.n_inputs;
-		x->is_main_output = order[i0] == bi;
 		x->fn = bus->opcode.fn;
 		x->context.n_in = n_inputs;
 		x->context.in = calloc(n_inputs, sizeof *x->context.in);
@@ -430,16 +448,15 @@ static inline void wav_samples(FILE* file, float* samples, int n_samples)
 	for (int i = 0; i < n_samples; i++) wav_sample(file, samples[i]);
 }
 
-static void write_output(struct buf* buf, int n_frames)
+static void scope_write_output(struct scope* scope, int n_frames)
 {
-	if (gig.wav != NULL) {
-		struct cur cur = bufcur(buf);
-		const int w = buf->width;
-		for (int i0 = 0; i0 < n_frames; i0++) {
-			SIGNAL* x = curw(&cur);
-			for (int i1 = 0; i1 < w; i1++) {
-				wav_sample(gig.wav, x[i1]);
-			}
+	assert(scope->wav != NULL);
+	struct cur cur = bufcur(scope->buf);
+	const int w = scope->buf->width;
+	for (int i0 = 0; i0 < n_frames; i0++) {
+		SIGNAL* x = curw(&cur);
+		for (int i1 = 0; i1 < w; i1++) {
+			wav_sample(scope->wav, x[i1]);
 		}
 	}
 }
@@ -500,9 +517,7 @@ static void work_it_out(void)
 		x->context.n_frames = n_frames;
 
 		x->fn(&x->context);
-		if (x->is_main_output) {
-			write_output(&x->context.out, n_frames);
-		}
+		if (x->scope != NULL) scope_write_output(x->scope, n_frames);
 
 		int n_new_todos = 0;
 		struct todo new_todos[1<<10];
@@ -565,9 +580,20 @@ static void* worker_thread(void* _arg)
 
 void render(int n_frames, int n_threads)
 {
+	for (int i = 0; i < arrlen(scopes); i++) {
+		struct scope* s = &scopes[i];
+		s->wav = wav_begin(s->path, global_sample_rate, gig.n_channels, n_frames);
+		struct bus* bus = get_bus(s->bus);
+		assert((bus->type == BUS_OPCODE) && "TODO scope support for non-opcodes? (probably slices)");
+		struct buf* out = get_bus(s->bus)->out;
+		assert(out != NULL);
+		s->buf = out;
+		struct exec* x = &gig.execs[bus->opcode.order];
+		x->scope = s;
+	}
+
 	gig.n_frames = n_frames;
 	gig.n_execs_active = arrlen(gig.execs);
-	gig.wav = wav_begin("out.wav", global_sample_rate, gig.n_channels, n_frames);
 
 	#ifdef PTHREADED
 	const int n_spawn = n_threads - 1;
@@ -585,5 +611,8 @@ void render(int n_frames, int n_threads)
 	}
 	#endif
 
-	wav_end(gig.wav);
+	for (int i = 0; i < arrlen(scopes); i++) {
+		struct scope* s = &scopes[i];
+		wav_end(s->wav);
+	}
 }

@@ -68,6 +68,8 @@ struct opcode_context {
 };
 typedef void (*opcode_fn)(struct opcode_context*);
 
+void scope(BUS, const char* path);
+
 BUS opcode_arr(int output_width, opcode_fn, void* usr, int n_inputs, BUS* inputs);
 BUS opcode(int output_width, opcode_fn, void* usr, ...);
 
