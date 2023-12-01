@@ -29,14 +29,15 @@ static void process(struct opcode_context* ctx)
 	assert(ctx->out.width == 1);
 
 	const int n_frames = ctx->n_frames;
-	SIGNAL f0 = 0;
+	float f0 = 0;
 	int i0 = 0;
 	int n_total = 0;
+	const float freqmul = 1.0 / (float)global_sample_rate;
 	for (int i = 0; i < n_frames; i++) {
 		const int is_first = (i == 0);
 		const int is_last  = (i == (n_frames-1));
 
-		SIGNAL freq = cur1read(&c_freq);
+		float freq = cur1read(&c_freq) * freqmul;
 		HexWaveParameters params = {
 			.reflect     = cur1read(&c_reflect) != 0,
 			.peak_time   = cur1read(&c_peak_time),
