@@ -74,13 +74,17 @@ static void curvegen_process(struct opcode_context* ctx)
 			n_frames = x1->p - st->position;
 		}
 		const SIGNAL t0 = st->position - st->p0;
+		const SIGNAL c0 = x0->c0;
+		const SIGNAL c1 = x0->c1;
+		const SIGNAL c2 = x0->c2;
+		const SIGNAL c3 = x0->c3;
 		for (int i = 0; i < n_frames; i++) {
 			const SIGNAL t = t0+(SIGNAL)i;
 			curw(&out)[0] =
-				x0->c0         +
-				x0->c1 * t     +
-				x0->c2 * t*t   +
-				x0->c3 * t*t*t ;
+				c0         +
+				c1 * t     +
+				c2 * t*t   +
+				c3 * t*t*t ;
 		}
 
 		st->position += n_frames;
