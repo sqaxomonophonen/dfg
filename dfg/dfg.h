@@ -96,8 +96,15 @@ struct seq {
 };
 
 extern struct seq global_seq;
-extern double     global_sample_rate;
+extern SIGNAL     global_sample_rate;
+extern SIGNAL     global_inverse_sample_rate;
 extern int        global_buffer_length;
+
+static inline void set_sample_rate(SIGNAL sample_rate)
+{
+	global_sample_rate = sample_rate;
+	global_inverse_sample_rate = 1.0f / sample_rate;
+}
 
 static inline void seq_set_bpm(struct seq* seq, double beats_per_minute)
 {

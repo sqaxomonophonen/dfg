@@ -13,7 +13,8 @@
 #endif
 
 struct seq global_seq;
-double global_sample_rate;
+SIGNAL global_sample_rate;
+SIGNAL global_inverse_sample_rate;
 int global_buffer_length;
 
 enum bus_type {
