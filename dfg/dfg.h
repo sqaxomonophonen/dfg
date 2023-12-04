@@ -76,11 +76,14 @@ BUS opcode(int output_width, opcode_fn, void* usr, ...);
 BUS song(void); // XXX call something else?
 
 BUS constant(SIGNAL v);
-BUS add(BUS b0, BUS b1);
-BUS sub(BUS b0, BUS b1);
-BUS mul(BUS b0, BUS b1);
-BUS divide(BUS b0, BUS b1);
-BUS vadd(BUS b0, ...);
+BUS add(BUS,BUS);
+BUS sub(BUS,BUS);
+BUS mul(BUS,BUS);
+BUS divide(BUS,BUS);
+BUS vadd(BUS,...);
+BUS msin(BUS);
+BUS mcos(BUS);
+BUS mpow(BUS,BUS);
 
 BUS hexwave(BUS freq, BUS reflect, BUS peak_time, BUS half_height, BUS zero_wait);
 
@@ -156,70 +159,80 @@ static inline double relpos(double beats)
 	return seq_relpos(&global_seq, global_sample_rate, beats);
 }
 
+typedef void (*curvefn)(SIGNAL* out, int n, SIGNAL x0, SIGNAL dx, SIGNAL c0, SIGNAL c1, SIGNAL c2, SIGNAL c3);
+
 struct curve_segment {
 	int p;
+	curvefn fn;
 	SIGNAL c0, c1, c2, c3;
 };
-
 typedef struct curve_segment* CURVE;
 
-static inline void curve_add_segment(struct curve_segment** xs, struct curve_segment x)
-{
-	// Maintain the curve using "musical drop sort":
-	//  - Curve must consist of unique positions in ascending order.
-	//  - Any segment in the curve with a position later or equal to the
-	//    one being appended is removed first.
-	const int n = arrlen(*xs);
-	if (n > 0 && x.p <= (*xs)[n-1].p) {
-		int left = 0;
-		int right = n;
-		while (left < right) {
-			const int mid = (left + right) >> 1;
-			if ((*xs)[mid].p < x.p) {
-				left = mid + 1;
-			} else {
-				right = mid;
-			}
-		}
-		arrsetlen(*xs, left);
-	}
-	arrput(*xs, x);
-}
+void curve_add_segment(CURVE* xs, struct curve_segment x);
 
-static inline void curve_addb(struct curve_segment** xs, double pos, double c0, double c1, double c2, double c3)
+static inline void curve_addfn(CURVE* xs, double pos, curvefn fn, SIGNAL c0, SIGNAL c1, SIGNAL c2, SIGNAL c3)
 {
-	const double s = 1.0 / beatlen(1.0);
 	curve_add_segment(xs, ((struct curve_segment) {
 		.p = relpos(pos),
+		.fn = fn,
 		.c0 = c0,
-		.c1 = c1*s,
-		.c2 = c2*s*s,
-		.c3 = c3*s*s*s,
+		.c1 = c1,
+		.c2 = c2,
+		.c3 = c3,
 	}));
 }
 
-static inline void curve_add0(struct curve_segment** xs, double pos, double c0)
+void curve_ramp(CURVE* xs, double pos, double len, SIGNAL val0, SIGNAL val1);
+static inline void curve_zramp(CURVE* xs, double pos, double len, SIGNAL val)
 {
-	curve_addb(xs, pos, c0, 0, 0, 0);
-}
-
-static inline void curve_add1(struct curve_segment** xs, double pos, double c0, double c1)
-{
-	curve_addb(xs, pos, c0, c1, 0, 0);
-}
-
-static inline void curve_add2(struct curve_segment** xs, double pos, double c0, double c1, double c2)
-{
-	curve_addb(xs, pos, c0, c1, c2, 0);
-}
-
-static inline void curve_add3(struct curve_segment** xs, double pos, double c0, double c1, double c2, double c3)
-{
-	curve_addb(xs, pos, c0, c1, c2, c3);
+	curve_ramp(xs, pos, len, val, 0);
 }
 
 BUS curvegen(struct curve_segment* xs);
 
+#define DEF_CURVEFN(NAME,EXPR) \
+static void _curvefn_ ## NAME(SIGNAL* out, int n, SIGNAL x0, SIGNAL dx, SIGNAL c0, SIGNAL c1, SIGNAL c2, SIGNAL c3) \
+{ \
+	SIGNAL tmp0=0, tmp1=0; \
+	(void)tmp0; (void)tmp1; \
+	SIGNAL* wp = out; \
+	SIGNAL fi = 0.0; \
+	for (int i = 0; i < n; i++, fi+=1.0) { \
+		const SIGNAL x = x0 + fi*dx; \
+		(void)x; \
+		*(wp++) = (EXPR); \
+	} \
+}
+
+#define DEF_CURVE0(NAME,EXPR) \
+DEF_CURVEFN(NAME,EXPR) \
+void curve_ ## NAME(struct curve_segment** xs, double pos) { \
+	curve_addfn(xs, pos, _curvefn_ ## NAME, 0, 0, 0, 0); \
+}
+
+#define DEF_CURVE1(NAME,EXPR) \
+DEF_CURVEFN(NAME,EXPR) \
+void curve_ ## NAME(struct curve_segment** xs, double pos, SIGNAL c0) { \
+	curve_addfn(xs, pos, _curvefn_ ## NAME, c0, 0, 0, 0); \
+}
+
+#define DEF_CURVE2(NAME,EXPR) \
+DEF_CURVEFN(NAME,EXPR) \
+void curve_ ## NAME(struct curve_segment** xs, double pos, SIGNAL c0, SIGNAL c1) { \
+	curve_addfn(xs, pos, _curvefn_ ## NAME, c0, c1, 0, 0); \
+}
+
+#define DEF_CURVE3(NAME,EXPR) \
+DEF_CURVEFN(NAME,EXPR) \
+void curve_ ## NAME(struct curve_segment** xs, double pos, SIGNAL c0, SIGNAL c1, SIGNAL c2) { \
+	curve_addfn(xs, pos, _curvefn_ ## NAME, c0, c1, c2, 0); \
+}
+
+#define DEF_CURVE4(NAME,EXPR) \
+DEF_CURVEFN(NAME,EXPR) \
+void curve_ ## NAME(struct curve_segment** xs, double pos, SIGNAL c0, SIGNAL c1, SIGNAL c2, SIGNAL c3) { \
+	curve_addfn(xs, pos, _curvefn_ ## NAME, c0, c1, c2, c3); \
+}
 
 #define DFG_H
 #endif

@@ -1,7 +1,31 @@
 #include <assert.h>
 #include <stdarg.h>
+#include <math.h>
 
 #include "idfg.h"
+
+#define DEF_X(NAME,EXPR) \
+static void NAME ## _process(struct opcode_context* ctx) \
+{ \
+	const int w = ctx->out.width; \
+	struct cur out = bufcurw(w, &ctx->out); \
+	struct cur in = bufcurw(w, &ctx->in[0]); \
+	const int n_frames = ctx->n_frames; \
+	for (int i0 = 0; i0 < n_frames; i0++) { \
+		SIGNAL* outp = curw(&out); \
+		SIGNAL* inp = curw(&in); \
+		for (int i1 = 0; i1 < w; i1++) { \
+			const SIGNAL x = *(inp++); \
+			const SIGNAL r = (EXPR); \
+			*(outp++) = r; \
+		} \
+	} \
+} \
+  \
+BUS NAME(BUS b) \
+{ \
+	return opcode(bus_width(b), NAME ## _process, NULL, b, NILBUS); \
+}
 
 #define DEF_XY(NAME,EXPR) \
 static void NAME ## _process(struct opcode_context* ctx) \
@@ -34,6 +58,9 @@ DEF_XY(mul,    (x*y))
 DEF_XY(add,    (x+y))
 DEF_XY(sub,    (x-y))
 DEF_XY(divide, (x/y))
+DEF_X(msin,    sinf(x));
+DEF_X(mcos,    cosf(x));
+DEF_XY(mpow,   powf(x,y));
 
 BUS vadd(BUS bus0, ...)
 {
@@ -50,6 +77,7 @@ BUS vadd(BUS bus0, ...)
 	return bus;
 }
 
+#if 0
 struct curvegen_state {
 	int n;
 	struct curve_segment* xs;
@@ -107,4 +135,44 @@ BUS curvegen(struct curve_segment* xs)
 	memcpy(cs->xs, xs, n * sz);
 	return opcode(1, curvegen_process, cs, NILBUS);
 }
+#endif
+
+
+void curve_add_segment(CURVE* xs, struct curve_segment x)
+{
+	// Maintain the curve using "musical drop sort":
+	//  - Curve must consist of unique positions in ascending order.
+	//  - Any segment in the curve with a position later or equal to the
+	//    one being appended is removed first.
+	const int n = arrlen(*xs);
+	if (n > 0 && x.p <= (*xs)[n-1].p) {
+		int left = 0;
+		int right = n;
+		while (left < right) {
+			const int mid = (left + right) >> 1;
+			if ((*xs)[mid].p < x.p) {
+				left = mid + 1;
+			} else {
+				right = mid;
+			}
+		}
+		arrsetlen(*xs, left);
+	}
+	arrput(*xs, x);
+}
+
+
+void curve_ramp(CURVE* xs, double pos, double len, SIGNAL val0, SIGNAL val1)
+{
+}
+
+#if 0
+static inline void curve_ramp(struct curve_segment** xs, double pos, double len, double val0, double val1)
+{
+	if (len <= 0) return;
+	curve_add1(xs, pos, val0, (val1-val0) / len);
+	curve_add0(xs, pos+len, val1);
+}
+
+#endif
 
